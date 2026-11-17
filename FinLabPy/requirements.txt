@@ -1,0 +1,12 @@
+scipy
+pandas
+matplotlib
+mplfinance
+
+maxapi
+aiogram
+discord.py
+
+backtrader
+lightweight_charts
+yadisk

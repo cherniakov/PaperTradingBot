@@ -1,0 +1,150 @@
+import logging
+import random
+
+import backtrader as bt
+
+
+class MinCommission(bt.CommInfoBase):
+    params = (
+        ('commission', 0.0005),
+        ('min_commission', 50.0),
+        ('commtype', bt.CommInfoBase.COMM_PERC),
+        ('stocklike', True),
+        ('percabs', True),
+    )
+
+    def _getcommission(self, size, price, pseudoexec):
+        commission = abs(size) * price * self.p.commission
+        return max(commission, self.p.min_commission)
+
+
+class MyStrategy(bt.Strategy):
+    """Тестовая стратегия со случайными сигналами"""
+    
+    params = (
+        ('trade_history', None),
+        ('initial_cash', None),
+    )
+
+    def __init__(self):
+        self.logger = logging.getLogger('PaperTrading_Finam')
+        self.live = False
+        self.order = None
+        self.trade_count = 0
+    
+    def start(self):
+    # Восстанавливаем виртуальный портфель
+        portfolio = self.p.trade_history.restore_portfolio(
+            self.p.initial_cash
+        )
+
+        # Восстанавливаем свободные средства
+        self.broker.setcash(float(portfolio['cash']))
+
+        # Восстанавливаем позиции
+        for data in self.datas:
+            symbol = data._name
+            saved_position = portfolio['positions'].get(symbol)
+
+            if saved_position is None:
+                continue
+
+            position = self.broker.getposition(data)
+
+            position.set(
+                saved_position['size'],
+                float(saved_position['price'])
+            )
+
+            self.logger.info(
+                f'Состояние портфеля | '
+                f'Инструмент: {symbol} | '
+                f'Позиция: {position.size} акций | '
+                f'Средняя цена: {position.price:.2f} ₽ | '
+                f'Свободные средства: {self.broker.getcash():,.2f} ₽'
+            )
+        
+    def next(self):
+        if not self.live:
+            return
+
+        if self.order or self.trade_count >= 4:
+            return
+
+        # Генерируем случайный сигнал
+        signal = random.randint(0, 1)
+
+        symbol = self.data._name.split('.')[-1]
+        operation = 'BUY' if signal == 1 else 'SELL'
+
+        if signal == 1:
+            action = 'ПОКУПКА'
+        elif self.position.size > 0:
+            action = 'ПРОДАЖА'
+        else:
+            action = 'ПРОПУСК (нет акций)'
+
+        self.logger.info(
+            f'{symbol} | '
+            f'Сигнал: {operation} | '
+            f'Цена: {self.data.close[0]:.2f} ₽ | '
+            f'Позиция: {self.position.size} | '
+            f'Действие: {action}'
+        )
+
+        if signal == 1:
+            self.order = self.buy()
+
+        elif signal == 0 and self.position.size > 0:
+            self.order = self.close()
+
+    def notify_order(self, order):
+        if order.status in [order.Submitted, order.Accepted]:
+            return
+
+        if order.status == order.Completed:
+            
+            self.p.trade_history.save_trade(
+                timestamp=bt.num2date(order.executed.dt).isoformat(),
+                symbol=order.data._name,
+                short_name='Сбербанк',
+                side='BUY' if order.isbuy() else 'SELL',
+                quantity=abs(order.executed.size),
+                price=order.executed.price,
+                commission=order.executed.comm
+                )
+            
+            self.trade_count += 1
+
+            operation = 'BUY' if order.isbuy() else 'SELL'
+
+            self.logger.info(
+                f'{operation} | '
+                f'Цена: {order.executed.price:.2f} | '
+                f'Количество: {abs(order.executed.size)} | '
+                f'Комиссия: {order.executed.comm:.2f} | '
+                f'Сделка №{self.trade_count}'
+            )
+
+            if self.trade_count >= 4:
+                self.logger.info('Исполнено 4 сделок. Останавливаем стратегию.')
+                self.env.runstop()
+
+        elif order.status in [order.Canceled, order.Margin, order.Rejected]:
+            self.logger.warning(
+                'Заявка не исполнена: %s',
+                order.getstatusname()
+            )
+
+        self.order = None
+
+    def notify_data(self, data, status, *args, **kwargs):
+        status_name = data._getstatusname(status)
+        self.logger.info(status_name)
+
+        if status == data.LIVE:
+            self.live = True
+            self.logger.info('Торговля в реальном времени разрешена')
+
+        elif status in [data.DELAYED, data.DISCONNECTED]:
+            self.live = False
