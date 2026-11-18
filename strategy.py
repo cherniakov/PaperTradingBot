@@ -33,13 +33,18 @@ class MyStrategy(bt.Strategy):
         self.trade_count = 0
     
     def start(self):
-    # Восстанавливаем виртуальный портфель
+        # Восстанавливаем виртуальный портфель
         portfolio = self.p.trade_history.restore_portfolio(
             self.p.initial_cash
         )
 
         # Восстанавливаем свободные средства
         self.broker.setcash(float(portfolio['cash']))
+
+        # Выводим свободные средства
+        self.logger.info(
+            f'Портфель | Свободные средства: {self.broker.getcash():,.2f} ₽'
+        )
 
         # Восстанавливаем позиции
         for data in self.datas:
@@ -56,18 +61,32 @@ class MyStrategy(bt.Strategy):
                 float(saved_position['price'])
             )
 
+            purchase_value = position.size * position.price
+            short_symbol = symbol.split('.')[-1]
+
             self.logger.info(
-                f'Состояние портфеля | '
-                f'Инструмент: {symbol} | '
-                f'Позиция: {position.size} акций | '
+                f'{short_symbol} | '
+                f'Количество: {position.size} | '
                 f'Средняя цена: {position.price:.2f} ₽ | '
-                f'Свободные средства: {self.broker.getcash():,.2f} ₽'
+                f'Стоимость покупки: {purchase_value:,.2f} ₽'
             )
-        
+              
     def next(self):
         if not self.live:
             return
 
+        # Сохраняем стоимость виртуального портфеля
+        cash = self.broker.getcash()
+        equity = self.broker.getvalue()
+        positions_value = equity - cash
+
+        self.p.trade_history.save_equity(
+            timestamp=bt.num2date(self.data.datetime[0]).isoformat(),
+            cash=cash,
+            positions_value=positions_value,
+            initial_cash=self.p.initial_cash
+        )
+        # Счетчик кол-во сделок - для удобства тестирования
         if self.order or self.trade_count >= 4:
             return
 
@@ -148,3 +167,26 @@ class MyStrategy(bt.Strategy):
 
         elif status in [data.DELAYED, data.DISCONNECTED]:
             self.live = False
+
+    def stop(self):
+        # Получаем итоговое состояние портфеля
+        cash = self.broker.getcash()
+        equity = self.broker.getvalue()
+        positions_value = equity - cash
+
+        # Сохраняем результат
+        self.p.trade_history.save_equity(
+            timestamp=bt.num2date(self.data.datetime[0]).isoformat(),
+            cash=cash,
+            positions_value=positions_value,
+            initial_cash=self.p.initial_cash
+        )
+
+        # Выводим итоговое состояние
+        self.logger.info(
+            f'Итоговый портфель | '
+            f'Свободные средства: {cash:,.2f} ₽ | '
+            f'Стоимость позиций: {positions_value:,.2f} ₽ | '
+            f'Капитал: {equity:,.2f} ₽ | '
+            f'P&L: {equity - self.p.initial_cash:+,.2f} ₽'
+        )
