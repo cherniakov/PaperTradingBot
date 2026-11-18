@@ -18,35 +18,31 @@ class TradeHistory:
         # Файл истории сделок
         self.file_path = self.directory / 'trades.csv'
 
-        # Структура CSV
-        self.fields = [
-            'execution_id',
-            'timestamp',
-            'symbol',
-            'short_name',
-            'side',
-            'quantity',
-            'price',
-            'commission'
-        ]
+        # Структура trades.csv
+        self.fields = ['execution_id', 'timestamp', 'symbol', 'short_name', 
+                       'side', 'quantity', 'price', 'commission']
 
         # Создаём файл, если его ещё нет
         if not self.file_path.exists() or self.file_path.stat().st_size == 0:
             with open(self.file_path, 'w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(self.fields)
+        
+        # Файл истории стоимости портфеля
+        self.equity_path = self.directory / 'equity.csv'
 
-    def save_trade(
-        self,
-        timestamp,
-        symbol,
-        short_name,
-        side,
-        quantity,
-        price,
-        commission
-    ):
-        """Сохранение исполненной сделки"""
+        self.equity_fields = ['timestamp', 'cash', 'positions_value', 
+                              'equity', 'pnl']
+
+        if not self.equity_path.exists() or self.equity_path.stat().st_size == 0:
+            with open(self.equity_path, 'w', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                writer.writerow(self.equity_fields)
+
+    def save_trade(self, timestamp, symbol, short_name, 
+                   side, quantity, price, commission):
+        """Сохранение исполненной сделки
+        """
 
         trade = {
             'execution_id': str(uuid4()),
@@ -160,16 +156,9 @@ class TradeHistory:
             amount = quantity * price
 
             if side == 'BUY':
-                total_cost = (
-                    position['size'] * position['price']
-                    + amount
-                )
-
+                total_cost = position['size'] * position['price'] + amount
                 position['size'] += quantity
-                position['price'] = (
-                    total_cost / position['size']
-                )
-
+                position['price'] = total_cost / position['size']
                 cash -= amount + commission
                 realized_pnl -= commission
 
@@ -181,10 +170,7 @@ class TradeHistory:
                         f'{position["size"]}'
                     )
 
-                profit = (
-                    price - position['price']
-                ) * quantity
-
+                profit = (price - position['price']) * quantity
                 realized_pnl += profit - commission
                 cash += amount - commission
 
@@ -201,3 +187,45 @@ class TradeHistory:
             'positions': positions,
             'realized_pnl': realized_pnl
         }
+
+    def save_equity(self, timestamp, cash, positions_value, initial_cash):
+        equity = cash + positions_value
+        pnl = equity - initial_cash
+
+        record = {
+            'timestamp': timestamp,
+            'cash': round(cash, 2),
+            'positions_value': round(positions_value, 2),
+            'equity': round(equity, 2),
+            'pnl': round(pnl, 2)
+        }
+
+        # Загружаем существующие записи
+        with open(self.equity_path, 'r', newline='', encoding='utf-8') as file:
+            records = list(csv.DictReader(file))
+
+        # Удаляем прежние записи с таким временем
+        records = [
+            row for row in records
+            if row['timestamp'] != timestamp
+        ]
+
+        # Добавляем актуальное состояние
+        records.append(record)
+
+        # Записываем через временный файл
+        temp_path = self.equity_path.with_suffix('.tmp')
+
+        with open(temp_path, 'w', newline='', encoding='utf-8') as file:
+            writer = csv.DictWriter(
+                file,
+                fieldnames=self.equity_fields
+            )
+
+            writer.writeheader()
+            writer.writerows(records)
+
+            file.flush()
+            os.fsync(file.fileno())
+
+        os.replace(temp_path, self.equity_path)
